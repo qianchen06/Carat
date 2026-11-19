@@ -496,8 +496,9 @@ void Solver::mlqpPropagate(Lit p) {
     }
 }
 
-bool Solver::reduceMLQPCore() {
-    // Borrow cleared seen and failed_stamp; restore before failed() or SAT runs.
+bool Solver::reduceMLQPCore(const std::vector<Lit> &core_assumps) {
+    // SAT analysis leaves seen cleared. Neither SAT nor failed() may run while
+    // its scratch/index slots are borrowed. Also restore on allocation failure.
     struct RestoreState {
         Solver &solver;
         bool active = true;
@@ -512,10 +513,10 @@ bool Solver::reduceMLQPCore() {
         }
     } restore{*this};
     // Preserve the input order when assigning support bits and queuing assumptions.
-    initMLQPState(failed_core.size());
+    initMLQPState(core_assumps.size());
     if (m_mlqpStrategy == 2) {
-        for (size_t i = 0; i < failed_core.size(); ++i) {
-            auto &entry = ensureMLQPEntry(failed_core[i]);
+        for (size_t i = 0; i < core_assumps.size(); ++i) {
+            auto &entry = ensureMLQPEntry(core_assumps[i]);
             // Repeated primed literals use their first singleton support.
             if (entry.assumption == size_t(-1)) entry.assumption = i;
         }
@@ -526,9 +527,9 @@ bool Solver::reduceMLQPCore() {
         updateMLQPSupport(mkLit(temp_cls_act_var), mlqp_work_support, 0);
     }
 
-    for (size_t i = 0; i < failed_core.size(); i++) {
+    for (size_t i = 0; i < core_assumps.size(); i++) {
         SetMLQPUnitSupport(mlqp_work_support, mlqp_support_chunks, i);
-        updateMLQPSupport(failed_core[i], mlqp_work_support, 1);
+        updateMLQPSupport(core_assumps[i], mlqp_work_support, 1);
     }
 
     for (size_t bucket_size = 0; bucket_size <= mlqp_core_size && bucket_size < mlqp_best_size; bucket_size++) {
@@ -548,25 +549,17 @@ bool Solver::reduceMLQPCore() {
     }
     // Bypass can reduce the core even when propagation cannot.
     if (m_mlqpStrategy == 2) reduceMLQPBypassCore();
-    // Restore failed marks before publishing the smaller core.
     restore.finish();
 
-    if (mlqp_best_size >= failed_core.size())
+    if (mlqp_best_size >= core_assumps.size())
         return false;
 
-    // Shrink in place and clear removed literals' failed marks.
-    size_t kept = 0;
-    for (size_t i = 0; i < failed_core.size(); i++) {
-        const Lit p = failed_core[i];
-        if (MLQPSupportHasBit(mlqp_best_core, i)) {
-            failed_core[kept++] = p;
-        } else {
-            failed_stamp[toInt(p)] = 0;
-        }
-    }
-    assert(kept == mlqp_best_size);
-    failed_core.resize(kept);
-    has_failed = !failed_core.empty();
+    // Publish only after all allocations succeed. The supplied UC may differ
+    // from SAT's old core; rebuild every failed mark instead of just removing.
+    failed_core.reserve(mlqp_best_size);
+    clearFailed();
+    for (size_t i = 0; i < core_assumps.size(); i++)
+        if (MLQPSupportHasBit(mlqp_best_core, i)) markFailed(core_assumps[i]);
     // Preserve temporary-clause dependency, even when the user core is empty.
     if (temp_cls_activated) markFailed(mkLit(temp_cls_act_var));
     return true;

@@ -11,7 +11,7 @@
 
 namespace minicore {
 
-// MLQP dependency bitset: bit i refers to failed_core[i].
+// MLQP dependency bitset: bit i refers to the caller's core_assumps[i].
 using MLQPSupportMask = uint64_t;
 using MLQPSupportSet = std::vector<MLQPSupportMask>;
 
@@ -75,10 +75,14 @@ class Solver {
 
     std::vector<Lit> intVec2LitVec(const std::vector<int> &vec); // Convert a vector of integers to a vector of literals.
 
-    // Shrink the last UNSAT core in place; update failed() and return true if reduced.
+    // Reduce the caller's UNSAT core in its supplied order, without modifying it.
+    // On success publish the result through failed(); otherwise keep the SAT core.
     // Strategy: 0 disabled, 1 Default, 2 Extended.
-    // Call before resetting or changing the query/domain.
-    bool mlqp(int strategy);
+    // Call while the last UNSAT query and temporary clauses remain intact.
+    // IC3 may first narrow the temporary domain to the validated core's COI.
+    // Cores below size 3 retain the trivial-core fast return. Otherwise preserve
+    // input order and reduce from scratch; no cross-query support cache.
+    bool mlqp(const std::vector<Lit> &core_assumps, int strategy);
     // Bypass deletions in the last MLQP call.
     size_t mlqpBypassReducedLiterals() const { return mlqp_bypass_reduced_literals; }
 
@@ -266,7 +270,7 @@ class Solver {
     void removeSubsumed(std::vector<CRef> &cs);  // Remove subsumed clauses from 'cs'.
     void removeTempLearnt();                     // Remove the clauses learnt from the temp clause.
 
-    bool reduceMLQPCore(); // Query and strategy already checked.
+    bool reduceMLQPCore(const std::vector<Lit> &core_assumps); // Query and strategy already checked.
     void initMLQPState(size_t core_size);
     const MLQPEntry *findMLQPEntry(Lit p) const;
     MLQPEntry &ensureMLQPEntry(Lit p);
